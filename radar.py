@@ -1,14 +1,12 @@
 
 import os
+import json
 import socket
-import asyncio
-from datetime import datetime
-
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+import urllib.request
+import urllib.parse
 
 TOKEN = os.environ["BOT_TOKEN"]
-ADMIN_ID = int(os.environ["ADMIN_ID"])
+ADMIN_ID = os.environ["ADMIN_ID"]
 
 SERVERS = {
     "🇩🇪 Германия": ("159.200.230.212", 25321),
@@ -17,60 +15,50 @@ SERVERS = {
     "🇳🇱 Нидерланды XHTTP": ("79.182.70.186", 26023),
 }
 
-previous = {}
+STATE_FILE = "status.json"
+
 
 def check(host, port):
     try:
-        with socket.create_connection((host, port), timeout=4):
+        with socket.create_connection((host, port), timeout=5):
             return True
     except OSError:
         return False
 
-async def status_text():
-    lines = ["⚡ 220voltRadar — состояние серверов\n"]
+
+def send_message(text):
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    data = urllib.parse.urlencode({
+        "chat_id": ADMIN_ID,
+        "text": text
+    }).encode()
+
+    request = urllib.request.Request(url, data=data)
+    with urllib.request.urlopen(request, timeout=15) as response:
+        response.read()
+
+
+def main():
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as file:
+            old = json.load(file)
+    except (FileNotFoundError, json.JSONDecodeError):
+        old = None
+
+    current = {}
+
     for name, (host, port) in SERVERS.items():
-        ok = await asyncio.to_thread(check, host, port)
-        previous[name] = ok
-        lines.append(f"{name}: {'🟢 Онлайн' if ok else '🔴 Недоступен'}")
-    lines.append(f"\n🕒 {datetime.now().strftime('%H:%M:%S')}")
-    return "\n".join(lines)
+        current[name] = check(host, port)
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "⚡ 220voltRadar\n\nМониторинг серверов 220voltVPN.\n"
-        "Команда /status — проверить серверы."
-    )
+    if old is not None:
+        for name, online in current.items():
+            if name in old and old[name] != online:
+                status = "🟢 Сервер восстановлен" if online else "🔴 Сервер недоступен"
+                send_message(f"{status}\n{name}")
 
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(await status_text())
+    with open(STATE_FILE, "w", encoding="utf-8") as file:
+        json.dump(current, file, ensure_ascii=False, indent=2)
 
-async def monitor(context: ContextTypes.DEFAULT_TYPE):
-    for name, (host, port) in SERVERS.items():
-        ok = await asyncio.to_thread(check, host, port)
-
-        if name in previous and previous[name] != ok:
-            message = (
-                f"{'🟢 Восстановление' if ok else '🔴 Сбой'}\n"
-                f"{name}\n"
-                f"Адрес: {host}:{port}"
-            )
-            await context.bot.send_message(ADMIN_ID, message)
-
-        previous[name] = ok
-
-async def main():
-    app = Application.builder().token(TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("status", status))
-
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling()
-
-    app.job_queue.run_repeating(monitor, interval=60, first=5)
-
-    await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
